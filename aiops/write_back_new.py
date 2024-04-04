@@ -18,9 +18,10 @@ class Action(Enum):
     do_action_maximum = 'do_action_maximum'
     do_action_normal = 'do_action_normal'
 
-    @classmethod
-    def do_action_normal_format(cls, **kwargs):
-        return '【第{num}次巡检{msg}】{detail}'.format(**kwargs)
+    def get_action_value(self, **kwargs):
+        if self == self.do_action_normal:
+            return '【第{num}次巡检{msg}】{detail}'.format(**kwargs)
+        return self.value
 
 
 class WriteBackMixin:
@@ -52,9 +53,8 @@ class WriteBackMixin:
             return
         latest_data = lst_data[-self.upgrade_threshold:]
         logger.info(f'latest_data:{latest_data}')
-        if any([self.upgrade_name not in i for i in latest_data]):
-            return
-        return {'action': Action.do_action_upgrade}
+        if all([self.upgrade_name in i for i in latest_data]):
+            return True
 
     def do_action_maximum(self, lst_data, **kwargs):
         """
@@ -62,9 +62,8 @@ class WriteBackMixin:
         :param lst_data: 列表数据
         :return:
         """
-        if len(lst_data) < self.maximum_threshold:
-            return
-        return {'action': Action.do_action_maximum}
+        if len(lst_data) > self.maximum_threshold:
+            return True
 
     def do_action_closed(self, lst_data, **kwargs):
         """
@@ -76,9 +75,8 @@ class WriteBackMixin:
             return
         latest_data = lst_data[-self.closed_threshold:]
         logger.info(f'latest_data:{latest_data}')
-        if any([self.closed_name not in i for i in latest_data]):
-            return
-        return {'action': Action.do_action_closed}
+        if all([self.closed_name in i for i in latest_data]):
+            return True
 
     def do_action_normal(self, lst_data, **kwargs):
         """
@@ -87,32 +85,12 @@ class WriteBackMixin:
         :return:
         """
         result = self.evaluate(alter_key=kwargs.get('alter_key'))
-        return {
-            'num': len(lst_data) + 1,
-            'action': Action.do_action_normal,
-            **result}
+        return {'num': len(lst_data) + 1, **result}
 
     def evaluate(self, **kwargs) -> dict:
         return {'msg': '恢复正常', 'detail': '相关阀值数据为100'}
 
-    def do_update(self, **kwargs):
-        alter_key = kwargs.get('alter_key')
-        alter_time = self.alters_map.get(alter_key).get('time')
-        action = kwargs.get('action')
-        msg = ''
-        if action == Action.do_action_closed:
-            msg = Action.do_action_closed.value
-        if action == Action.do_action_maximum:
-            msg = Action.do_action_maximum.value
-        if action == Action.do_action_upgrade:
-            msg = Action.do_action_upgrade.value
-        if action == Action.do_action_normal:
-            msg = Action.do_action_normal_format(**kwargs)
-        params = {
-            'alter_key': alter_key,
-            'time': alter_time,
-            'msg': msg
-        }
+    def do_update(self, params):
         logger.info(f'params:{params}')
         # try:
         #     requests.put(url=self.url, params=params).json()
@@ -130,19 +108,20 @@ class WriteBackMixin:
 
             resp = requests.get(url=self.url, params={"alter_source": alter_source}).json()
         except Exception as exc:
+            # logger.exception(exc)
             pass
 
         def gen_data():
             test_data = []
             for i in range(random.randint(2, 50)):
-                tt=[]
+                tt = []
                 for x in range(random.randint(2, 12)):
                     tt.append({'user': 'rebot_txt', 'remark': '{}'.format(random.choice(['已恢复', '未恢复']))})
-                dd={
-                        "alter_key": "alter_key_"+str(i),
-                        "term_id": "1",
-                        "records": {'2024-04-12':tt}
-                    }
+                dd = {
+                    "alter_key": "alter_key_" + str(i),
+                    "term_id": "1",
+                    "records": {'2024-04-12': tt}
+                }
                 test_data.append(dd)
             return test_data
 
@@ -166,6 +145,9 @@ class WriteBackMixin:
         logger.info(f"{alter_key} do")
         # 告警内容
         alter_value = self.alters_map[alter_key]
+        # 告警时间
+        alter_time = self.alters_map.get(alter_key).get('time')
+
         # 回写日志列表
         lst_data = []
         for _, records in alter_value['records'].items():
@@ -185,11 +167,20 @@ class WriteBackMixin:
             action_fn = getattr(self, fn_name)
             resp = action_fn(lst_data=lst_data, alter_key=alter_key)
             logger.info(f'{fn_name} resp is {resp}')
-            if resp:
-                self.do_update(alter_key=alter_key, **resp)
-                # 终止下一个步骤
-                logger.info(f'=================================')
-                return
+            params = {'msg': '', 'alter_key': alter_key, 'alter_time': alter_time}
+            if not resp:
+                continue
+            if isinstance(resp, bool):
+                params['msg'] = member.value
+            if isinstance(resp, dict):
+                params['msg'] = member.get_action_value(**resp)
+            self.do_update(params=params)
+            # try:
+            #     requests.put(url=self.url, params=params).json()
+            # except Exception as exc:
+            #     logger.exception(exc)
+            # 终止下一个步骤
+            return
 
     def run(self, alter_source, **kwargs):
 
@@ -215,8 +206,10 @@ class WriteBackMixin:
                     logger.exception(exc)
                     print(f"获取{alter_key}数据并处理时发生错误: {exc}")
 
-logging.basicConfig(level=logging.DEBUG,format='%(asctime)s - %(name)s - %(thread)d  -%(threadName)s -%(funcName)s  - %(levelname)s - %(message)s')
+
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s - %(name)s - %(thread)d  -%(threadName)s -%(funcName)s  - %(levelname)s - %(message)s')
 wb = WriteBackMixin()
-# # wb.load_alters_data(alter_source='x')
+# # # wb.load_alters_data(alter_source='x')
 wb.run(alter_source='x')
-# # print(wb.alters_map)
+# # # print(wb.alters_map)
